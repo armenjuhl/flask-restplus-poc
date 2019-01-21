@@ -15,8 +15,8 @@ class Language(Resource):
     def get(self):
         return languages
 
-    api.expect(a_language)
-    def post(selfself):
+    @api.expect(a_language)
+    def post(self):
         languages.append(api.payload)
         return {'results' : 'Language added'}, 201
 
