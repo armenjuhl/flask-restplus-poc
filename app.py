@@ -13,6 +13,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = ('sqlite:////media/sf_VMSharedFolder/Fas
 
 db = SQLAlchemy(app)
 
+
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     public_id = db.Column(db.String(50), unique=True)
@@ -20,11 +21,13 @@ class User(db.Model):
     password = db.Column(db.String(80))
     admin = db.Column(db.Boolean)
 
+
 class Todo(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.String(50))
     complete = db.Column(db.Boolean)
     user_id = db.Column(db.Integer)
+
 
 def token_required(f):
     @wraps(f)
@@ -47,8 +50,35 @@ def token_required(f):
 
     return decorated
 
+
+@app.route('/login')
+def login():
+    auth = request.authorization
+
+    if not auth or not auth.username or not auth.password:
+        return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+
+    user = User.query.filter_by(name=auth.username).first()
+
+    if not user:
+        return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+
+    if check_password_hash(user.password, auth.password):
+        time = datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
+        token = jwt.encode({'public_id': user.public_id, 'exp': time}, app.config['SECRET_KEY'])
+
+        return jsonify({'token': token.decode('UTF-8')})
+
+    return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+
+
 @app.route('/user', methods=['GET'])
-def get_all_users():
+@token_required
+def get_all_users(current_user):
+
+    if not current_user.admin:
+        return jsonify({'message': 'Cannot perform that function'})
+
     users = User.query.all()
 
     user_list = []
@@ -71,17 +101,29 @@ def get_all_users():
     return jsonify({'payload': output})
 
 @app.route('/user', methods=['POST'])
-def create_user():
+@token_required
+def create_user(current_user):
+
+    if not current_user.admin:
+        return jsonify({'message': 'Cannot perform that function'})
+
     data = request.get_json()
     hashed_password = generate_password_hash(data['password'], method='sha256')
-    new_user = User(public_id=str(uuid.uuid4())[:8], name=data['name'], password=hashed_password, admin=False)
-    db.session.add(new_user)
-    db.session.commit()
+    if User.query.filter_by(name=data['name']).first():
+        return jsonify({'message': 'username already exists!'})
+    else:
+        new_user = User(public_id=str(uuid.uuid4())[:8], name=data['name'], password=hashed_password, admin=False)
+        db.session.add(new_user)
+        db.session.commit()
 
     return jsonify({'message': 'New user created!'})
 
 @app.route('/user/<public_id>', methods=['GET'])
-def get_one_user(public_id):
+@token_required
+def get_one_user(current_user, public_id):
+
+    if not current_user.admin:
+        return jsonify({'message': 'Cannot perform that function'})
 
     user = User.query.filter_by(public_id=public_id).first()
 
@@ -100,7 +142,11 @@ def get_one_user(public_id):
     return jsonify({'payload': user})
 
 @app.route('/user/promote/<public_id>', methods=['PUT'])
-def promote_user(public_id):
+@token_required
+def promote_user(current_user, public_id):
+
+    if not current_user.admin:
+        return jsonify({'message': 'Cannot perform that function'})
 
     user = User.query.filter_by(public_id=public_id).first()
 
@@ -120,7 +166,11 @@ def promote_user(public_id):
     return jsonify({'payload': output})
 
 @app.route('/user/demote/<public_id>', methods=['PUT'])
-def demote_user(public_id):
+@token_required
+def demote_user(current_user, public_id):
+
+    if not current_user.admin:
+        return jsonify({'message': 'Cannot perform that function'})
 
     user = User.query.filter_by(public_id=public_id).first()
 
@@ -139,8 +189,12 @@ def demote_user(public_id):
     output['message'] = message
     return jsonify({'payload': output})
 
+@token_required
 @app.route('/user/<public_id>', methods=['DELETE'])
-def delete_user(public_id):
+def delete_user(current_user, public_id):
+
+    if not current_user.admin:
+        return jsonify({'message': 'Cannot perform that function'})
 
     message = {}
     user = User.query.filter_by(public_id=public_id).first()
@@ -151,29 +205,88 @@ def delete_user(public_id):
     db.session.delete(user)
     db.session.commit()
 
-
     message['message'] = 'The user has been deleted'
-    return jsonify({'payload':message})
+    return jsonify({'payload': message})
 
-@app.route('/login')
-def login():
-    auth = request.authorization
+# /////////////////////////////////////////////////////////////////////////////
+# TODO SECTION
+# /////////////////////////////////////////////////////////////////////////////
 
-    if not auth or not auth.username or not auth.password:
-        return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+@app.route('/todo', methods=['GET'])
+@token_required
+def get_all_todos(current_user):
 
-    user = User.query.filter_by(name=auth.username).first()
+    todo_list = []
+    for task in Todo.query.all():
+        task_item = dict()
+        task_item['id'] = task.id
+        task_item['text'] = task.text
+        task_item['complete'] = task.complete
+        task_item['user_id'] = task.user_id
+        todo_list.append(task_item)
 
-    if not user:
-        return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+    todos = {'todos': todo_list}
 
-    if check_password_hash(user.password, auth.password):
-        time = datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
-        token = jwt.encode({'public_id': user.public_id, 'exp': time}, app.config['SECRET_KEY'])
+    return jsonify({'payload': todos})
 
-        return jsonify({'token': token.decode('UTF-8')})
 
-    return make_response('Could not verify', 401, {'WWW-Authenticate': 'Basic realm="Login required!"'})
+@app.route('/todo/<todo_id>', methods=['GET'])
+@token_required
+def get_one_todo(current_user, todo_id):
+    todo = Todo.query.filter_by(id=todo_id, user_id=current_user.id).first()
+
+    if not todo:
+        return jsonify({'message': 'No todo found!'})
+
+    todo_data = {}
+    todo_data['id'] = todo.id
+    todo_data['text'] = todo.text
+    todo_data['complete'] = todo.complete
+    output = {'todo': todo_data}
+
+    return jsonify({'payload': output})
+
+
+@app.route('/todo', methods=['POST'])
+@token_required
+def create_todo(current_user):
+    data = request.get_json()
+
+    new_todo = Todo(text=data['text'], complete=False, user_id=current_user.id)
+    db.session.add(new_todo)
+    db.session.commit()
+
+    return jsonify({'message': 'Todo created!'})
+
+@app.route('/todo/<todo_id>', methods=['PUT'])
+@token_required
+def complete_todo(current_user, todo_id):
+    todo = Todo.query.filter_by(id=todo_id, user_id=current_user.id).first()
+
+    if not todo:
+        return jsonify({'message': 'No todo found!'})
+
+    if todo.complete == True:
+        return jsonify({'message': 'That task is already completed!'})
+    else:
+        todo.complete = True
+        db.session.commit()
+
+
+    return jsonify({'message': 'Todo item has been completed'})
+
+@app.route('/todo/<todo_id>', methods=['DELETE'])
+@token_required
+def delete_todo(current_user, todo_id):
+    todo = Todo.query.filter_by(id=todo_id, user_id=current_user.id).first()
+
+    if not todo:
+        return jsonify({'message': 'No todo found!'})
+
+    db.session.delete(todo)
+    db.session.commit()
+
+    return jsonify({"message": 'Todo item deleted'})
 
 
 if __name__ == '__main__':
